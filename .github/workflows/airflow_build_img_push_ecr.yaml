@@ -1,0 +1,116 @@
+name: Build & Push Airflow Images to ECR
+on:
+  push:
+    branches:
+      - main
+      - master
+      - airflow_test
+  workflow_dispatch:
+    inputs:
+      image_directory:
+        description: >
+          Path to the Airflow image directory
+        required: true
+        default: "release_server/airflow/cloudformation/image"
+        type: string
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  REPO_NAME: ${{ github.event.repository.name }}
+  TEAM: etcetera
+  AWS_REGION: us-east-1 #ap-south-1
+  IMAGE_DIRECTORY: release_server/airflow/cloudformation/image
+  ROLE: airflowtestrole
+
+jobs:
+  build-and-push-airflow-images:
+    name: Build & Push Airflow Images
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # - name: Install awscli
+      #   run: |
+      #     sudo apt install awscli
+
+      - name: AWS Auth
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::224039896123:role/devs/github/etcetera-airflow-github-role
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Resolve ECR Base URL
+        run: |
+          BASE_URL=$(aws ecr describe-repositories \
+            --repository-names airflow \
+            --region ${{ env.AWS_REGION }} \
+            --output text \
+            --query 'repositories[?repositoryName==`airflow`].repositoryUri | [0]')
+
+          if [[ -z "$BASE_URL" || "$BASE_URL" == "None" ]]; then
+            echo "::error::Could not resolve ECR URI. Check repo exists."
+            exit 1
+          fi
+
+          echo "BASE_URL=$BASE_URL" >> "$GITHUB_ENV"
+          echo "Resolved → $BASE_URL"
+
+      # - name: Setup Docker
+      #   id: docker-setup
+      #   uses: docker/setup-docker-action@v4
+      #   with:
+      #     daemon-config: |
+      #       {
+      #         "dns": ["1.1.1.1", "8.8.8.8"],
+      #         "features": {
+      #           "buildkit": true
+      #         }
+      #       }
+
+      # - name: Set up Docker Buildx
+      #   uses: docker/setup-buildx-action@v3
+
+      # - name: Build airflow-base
+      #   working-directory: ${{ env.IMAGE_DIRECTORY }}
+      #   run: |
+      #     echo "::group::Building airflow-base"
+      #     docker build . \
+      #       --target base-image \
+      #       --tag "$BASE_URL:airflow-base"
+      #     echo "::endgroup::"
+
+      # - name: Build airflow-websched
+      #   working-directory: ${{ env.IMAGE_DIRECTORY }}
+      #   run: |
+      #     echo "::group::Building airflow-websched"
+      #     docker build . \
+      #       --target websched \
+      #       --tag "$BASE_URL:airflow-websched"
+      #     echo "::endgroup::"
+
+      # - name: Build airflow-worker
+      #   working-directory: ${{ env.IMAGE_DIRECTORY }}
+      #   run: |
+      #     echo "::group::Building airflow-worker"
+      #     docker build . \
+      #       --target worker \
+      #       --tag "$BASE_URL:airflow-worker"
+      #     echo "::endgroup::"
+
+      # - name: Push airflow-base to ECR
+      #   run: docker push "$BASE_URL:airflow-base"
+
+      # - name: Push airflow-websched to ECR
+      #   run: docker push "$BASE_URL:airflow-websched"
+
+      # - name: Push airflow-worker to ECR
+      #   run: docker push "$BASE_URL:airflow-worker"
