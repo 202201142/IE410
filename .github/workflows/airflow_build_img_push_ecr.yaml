@@ -14,9 +14,9 @@ on:
         default: "release_server/airflow/cloudformation/image"
         type: string
 
-permissions:
-  id-token: write
-  contents: read
+# permissions:
+#   id-token: write
+#   contents: read
 
 env:
   REPO_NAME: ${{ github.event.repository.name }}
@@ -33,20 +33,16 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-
-      # - name: Install awscli
-      #   run: |
-      #     sudo apt install awscli
-
+    
       - name: AWS Auth
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: arn:aws:iam::224039896123:role/devs/github/etcetera-airflow-github-role
           aws-region: ${{ env.AWS_REGION }}
 
-      # - name: Login to Amazon ECR
-      #   id: login-ecr
-      #   uses: aws-actions/amazon-ecr-login@v2
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
 
       - name: Resolve ECR Base URL
         run: |
