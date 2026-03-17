@@ -1,10 +1,5 @@
 name: Build & Push Airflow Images to ECR
 on:
-  push:
-    branches:
-      - main
-      - master
-      - airflow_test
   workflow_dispatch:
     inputs:
       image_directory:
@@ -14,9 +9,9 @@ on:
         default: "release_server/airflow/cloudformation/image"
         type: string
 
-# permissions:
-#   id-token: write
-#   contents: read
+permissions:
+  id-token: write
+  contents: read
 
 env:
   REPO_NAME: ${{ github.event.repository.name }}
@@ -60,21 +55,18 @@ jobs:
           echo "BASE_URL=$BASE_URL" >> "$GITHUB_ENV"
           echo "Resolved → $BASE_URL"
 
-      # - name: Setup Docker
-      #   id: docker-setup
-      #   uses: docker/setup-docker-action@v4
-      #   with:
-      #     daemon-config: |
-      #       {
-      #         "dns": ["1.1.1.1", "8.8.8.8"],
-      #         "features": {
-      #           "buildkit": true
-      #         }
-      #       }
-
-      # - name: Set up Docker Buildx
-      #   uses: docker/setup-buildx-action@v3
-
+      - name: Setup Docker
+        id: docker-setup
+        uses: docker/setup-docker-action@v4
+        with:
+          daemon-config: |
+            {
+              "dns": ["1.1.1.1", "8.8.8.8"],
+              "features": {
+                "buildkit": true
+              }
+            }
+          
       # - name: Build airflow-base
       #   working-directory: ${{ env.IMAGE_DIRECTORY }}
       #   run: |
