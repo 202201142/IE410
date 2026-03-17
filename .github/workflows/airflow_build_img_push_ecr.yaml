@@ -114,3 +114,39 @@ jobs:
 
       # - name: Push airflow-worker to ECR
       #   run: docker push "$BASE_URL:airflow-worker"
+
+      - name: Build airflow-base
+        working-directory: ${{ env.IMAGE_DIRECTORY }}
+        run: |
+          echo "::group::Building airflow-base"
+          docker build . \
+            --target base-image \
+            --tag "$BASE_URL:airflow-base"
+          echo "::endgroup::"
+
+      - name: Build airflow-websched
+        working-directory: ${{ env.IMAGE_DIRECTORY }}
+        run: |
+          echo "::group::Building airflow-websched"
+          docker build . \
+            --target websched \
+            --tag "$BASE_URL:airflow-websched"
+          echo "::endgroup::"
+
+      - name: Build airflow-worker
+        working-directory: ${{ env.IMAGE_DIRECTORY }}
+        run: |
+          echo "::group::Building airflow-worker"
+          docker build . \
+            --target worker \
+            --tag "$BASE_URL:airflow-worker"
+          echo "::endgroup::"
+
+      - name: Push airflow-base to ECR
+        run: docker push "$BASE_URL:airflow-base"
+
+      - name: Push airflow-websched to ECR
+        run: docker push "$BASE_URL:airflow-websched"
+
+      - name: Push airflow-worker to ECR
+        run: docker push "$BASE_URL:airflow-worker"
