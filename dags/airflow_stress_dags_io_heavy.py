@@ -251,6 +251,25 @@ def io_metadata_stat_stress(root: str = "/etc", limit: int = 8000, **_: Any) -> 
     return {"files": count, "total_kb": total // 1024}
 
 
+def io_recursive_dir_walk(**_: Any) -> dict:
+    """Walk /proc or /sys – many small I/O calls."""
+    root = "/proc" if os.path.isdir("/proc") else tempfile.gettempdir()
+    file_count = 0
+    byte_count = 0
+    for dirpath, _, filenames in os.walk(root):
+        for fname in filenames:
+            try:
+                fpath = os.path.join(dirpath, fname)
+                byte_count += os.path.getsize(fpath)
+                file_count += 1
+            except OSError:
+                pass
+        if file_count > 10_000:
+            break
+    print(f"[dir_walk] walked {file_count} files, ~{byte_count // 1024} KB total")
+    return {"files": file_count}
+
+
 def io_network_dns_resolve(**_: Any) -> dict:
     """Resolve a handful of hostnames – real network I/O."""
     hosts = [
@@ -583,7 +602,7 @@ def _make_dag(dag_id: str, profile: int) -> DAG:
             t12 >> t13
             t13 >> t14
 
-        # ── PROFILE 5 : Deep sequential chain (IO-biased) ──────��─────────────
+        # ── PROFILE 5 : Deep sequential chain (IO-biased) ────────────────────
         elif profile % 13 == 5:
             tasks = [
                 PythonOperator(task_id="step_01_disk", python_callable=io_disk_stress, op_kwargs={"size_mb": 64}),
