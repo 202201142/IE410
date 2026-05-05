@@ -168,23 +168,87 @@ def io_temp_file_pipeline(**_: Any) -> dict:
     return {"stages": 5}
 
 
-def io_recursive_dir_walk(**_: Any) -> dict:
-    """Walk /proc or /sys – many small I/O calls."""
-    root = "/proc" if os.path.isdir("/proc") else tempfile.gettempdir()
-    file_count = 0
-    byte_count = 0
+def io_temp_dir_tree(file_count: int = 2000, depth: int = 3, **_: Any) -> dict:
+    """Create a temp directory tree with many small files, then delete it."""
+    root = tempfile.mkdtemp(prefix="stress_tree_")
+    created = 0
+    current_level = [root]
+    for level in range(depth):
+        next_level = []
+        for parent in current_level:
+            for idx in range(4):
+                dpath = os.path.join(parent, f"d{level}_{idx}")
+                os.makedirs(dpath, exist_ok=True)
+                next_level.append(dpath)
+        current_level = next_level
+
+    for idx in range(file_count):
+        dpath = random.choice(current_level)
+        fpath = os.path.join(dpath, f"file_{idx:05d}.bin")
+        with open(fpath, "wb") as fh:
+            fh.write(os.urandom(2048))
+        created += 1
+
+    total = 0
     for dirpath, _, filenames in os.walk(root):
         for fname in filenames:
+            fpath = os.path.join(dirpath, fname)
+            total += os.path.getsize(fpath)
+
+    for dirpath, _, filenames in os.walk(root, topdown=False):
+        for fname in filenames:
+            os.unlink(os.path.join(dirpath, fname))
+        os.rmdir(dirpath)
+
+    print(f"[dir_tree] created {created} files, total={total // 1024} KB")
+    return {"files": created, "total_kb": total // 1024}
+
+
+def io_chunked_file_copy(size_mb: int = 64, chunk_kb: int = 256, **_: Any) -> dict:
+    """Write a temp file then copy it in chunks – simulates streaming I/O."""
+    src = tempfile.NamedTemporaryFile(delete=False, suffix=".src")
+    src_path = src.name
+    src.close()
+
+    with open(src_path, "wb") as fh:
+        for _ in range(size_mb):
+            fh.write(os.urandom(1024 * 1024))
+
+    dst_path = f"{src_path}.copy"
+    chunk = 1024 * chunk_kb
+    with open(src_path, "rb") as src_fh, open(dst_path, "wb") as dst_fh:
+        while True:
+            buf = src_fh.read(chunk)
+            if not buf:
+                break
+            dst_fh.write(buf)
+
+    src_size = os.path.getsize(src_path)
+    dst_size = os.path.getsize(dst_path)
+    os.unlink(src_path)
+    os.unlink(dst_path)
+    print(f"[chunk_copy] copied {src_size // 1024} KB in {chunk_kb} KB chunks")
+    return {"src_kb": src_size // 1024, "dst_kb": dst_size // 1024}
+
+
+def io_metadata_stat_stress(root: str = "/etc", limit: int = 8000, **_: Any) -> dict:
+    """Stat many files to stress filesystem metadata reads."""
+    count = 0
+    total = 0
+    for dirpath, _, filenames in os.walk(root):
+        for fname in filenames:
+            fpath = os.path.join(dirpath, fname)
             try:
-                fpath = os.path.join(dirpath, fname)
-                byte_count += os.path.getsize(fpath)
-                file_count += 1
+                total += os.stat(fpath).st_size
+                count += 1
             except OSError:
                 pass
-        if file_count > 10_000:
+            if count >= limit:
+                break
+        if count >= limit:
             break
-    print(f"[dir_walk] walked {file_count} files, ~{byte_count // 1024} KB total")
-    return {"files": file_count}
+    print(f"[stat_stress] stat {count} files from {root}, total={total // 1024} KB")
+    return {"files": count, "total_kb": total // 1024}
 
 
 def io_network_dns_resolve(**_: Any) -> dict:
@@ -205,6 +269,20 @@ def io_network_dns_resolve(**_: Any) -> dict:
         except OSError as exc:
             results[host] = f"ERR:{exc}"
     print(f"[dns_resolve] {results}")
+    return results
+
+
+def io_socket_connect(**_: Any) -> dict:
+    """Open TCP connections to common hosts to simulate network I/O."""
+    targets = [("github.com", 443), ("amazon.com", 443), ("cloudflare.com", 443)]
+    results: dict[str, str] = {}
+    for host, port in targets:
+        try:
+            with socket.create_connection((host, port), timeout=5):
+                results[host] = "ok"
+        except OSError as exc:
+            results[host] = f"ERR:{exc}"
+    print(f"[socket_connect] {results}")
     return results
 
 
@@ -337,9 +415,14 @@ COUNT=$(find /usr /lib /etc -type f 2>/dev/null | wc -l || echo 0)
 echo "[bash_find] Found $COUNT files"
 """
 
+BASH_URANDOM_READ = """\
+echo "[bash_urandom] Reading 128MB from /dev/urandom"
+dd if=/dev/urandom of=/dev/null bs=4M count=32 status=progress 2>&1
+"""
+
 # ──────────────────────────────────────────────────────────────────────────────
 #  DAG PROFILE CATALOGUE
-# ──────────────────────��───────────────────────────────────────────────────────
+# ──────────────────────────────────────────────────────────────────────────────
 
 
 def _make_dag(dag_id: str, profile: int) -> DAG:
@@ -372,6 +455,8 @@ def _make_dag(dag_id: str, profile: int) -> DAG:
             t11 = PythonOperator(task_id="xcom_consumer", python_callable=xcom_consumer)
             t12 = PythonOperator(task_id="light_prime", python_callable=cpu_prime_sieve, op_kwargs={"limit": 100_000})
             t13 = PythonOperator(task_id="disk_stress_sm", python_callable=io_disk_stress, op_kwargs={"size_mb": 48})
+            t14 = PythonOperator(task_id="dir_tree", python_callable=io_temp_dir_tree, op_kwargs={"file_count": 1500})
+            t15 = PythonOperator(task_id="chunk_copy", python_callable=io_chunked_file_copy, op_kwargs={"size_mb": 48})
 
             t1 >> [t2, t3]
             t2 >> t4
@@ -383,6 +468,7 @@ def _make_dag(dag_id: str, profile: int) -> DAG:
             t10 >> t11
             t9 >> t12
             [t11, t12] >> t13
+            t13 >> [t14, t15]
 
         # ── PROFILE 1 : I/O heavy pipeline ───────────────────────────────────
         elif profile % 13 == 1:
@@ -399,6 +485,7 @@ def _make_dag(dag_id: str, profile: int) -> DAG:
             t11 = PythonOperator(task_id="disk_stress_sm", python_callable=io_disk_stress, op_kwargs={"size_mb": 32})
             t12 = PythonOperator(task_id="string_processing", python_callable=memory_string_processing, op_kwargs={"count": 120_000})
             t13 = BashOperator(task_id="bash_sort", bash_command=BASH_SORT_LARGE)
+            t14 = PythonOperator(task_id="socket_connect", python_callable=io_socket_connect)
 
             t1 >> t2 >> t3
             t3 >> [t4, t5]
@@ -409,6 +496,7 @@ def _make_dag(dag_id: str, profile: int) -> DAG:
             t9 >> t11
             t10 >> t12
             [t11, t12] >> t13
+            t13 >> t14
 
         # ── PROFILE 2 : Memory + IO pressure ─────────────────────────────────
         elif profile % 13 == 2:
@@ -425,6 +513,7 @@ def _make_dag(dag_id: str, profile: int) -> DAG:
             t11 = BashOperator(task_id="bash_compress", bash_command=BASH_COMPRESS_STRESS)
             t12 = PythonOperator(task_id="dns_resolve", python_callable=io_network_dns_resolve)
             t13 = PythonOperator(task_id="sleep_wait", python_callable=sleep_io_wait, op_kwargs={"seconds": 5})
+            t14 = PythonOperator(task_id="dir_tree", python_callable=io_temp_dir_tree, op_kwargs={"file_count": 1800})
 
             [t1, t2] >> t3
             t3 >> [t4, t5]
@@ -435,8 +524,9 @@ def _make_dag(dag_id: str, profile: int) -> DAG:
             t9 >> [t10, t11]
             [t10, t11] >> t12
             t12 >> t13
+            t13 >> t14
 
-        # ── PROFILE 3 : Bash + IO dominant ──────��────────────────────────────
+        # ── PROFILE 3 : Bash + IO dominant ───────────────────────────────────
         elif profile % 13 == 3:
             t1 = BashOperator(task_id="bash_disk", bash_command=BASH_DISK_IO)
             t2 = BashOperator(task_id="bash_mem", bash_command=BASH_MEMORY_STRESS)
@@ -445,12 +535,14 @@ def _make_dag(dag_id: str, profile: int) -> DAG:
             t5 = BashOperator(task_id="bash_fork", bash_command=BASH_PROCESS_FORK)
             t6 = BashOperator(task_id="bash_compress", bash_command=BASH_COMPRESS_STRESS)
             t7 = BashOperator(task_id="bash_network", bash_command=BASH_NETWORK_CURL)
-            t8 = PythonOperator(task_id="python_io", python_callable=io_disk_stress, op_kwargs={"size_mb": 48})
-            t9 = PythonOperator(task_id="python_dir", python_callable=io_recursive_dir_walk)
-            t10 = PythonOperator(task_id="python_dns", python_callable=io_network_dns_resolve)
-            t11 = PythonOperator(task_id="python_mem", python_callable=memory_large_allocation, op_kwargs={"mb": 128})
-            t12 = PythonOperator(task_id="light_sort", python_callable=cpu_sorting_stress, op_kwargs={"n": 150_000})
-            t13 = PythonOperator(task_id="mixed_pipeline", python_callable=mixed_cpu_io_pipeline)
+            t8 = BashOperator(task_id="bash_urandom", bash_command=BASH_URANDOM_READ)
+            t9 = PythonOperator(task_id="python_io", python_callable=io_disk_stress, op_kwargs={"size_mb": 48})
+            t10 = PythonOperator(task_id="python_dir", python_callable=io_recursive_dir_walk)
+            t11 = PythonOperator(task_id="python_dns", python_callable=io_network_dns_resolve)
+            t12 = PythonOperator(task_id="python_mem", python_callable=memory_large_allocation, op_kwargs={"mb": 128})
+            t13 = PythonOperator(task_id="light_sort", python_callable=cpu_sorting_stress, op_kwargs={"n": 150_000})
+            t14 = PythonOperator(task_id="stat_stress", python_callable=io_metadata_stat_stress)
+            t15 = PythonOperator(task_id="mixed_pipeline", python_callable=mixed_cpu_io_pipeline)
 
             [t1, t2] >> t3
             t3 >> [t4, t5]
@@ -458,8 +550,10 @@ def _make_dag(dag_id: str, profile: int) -> DAG:
             t6 >> [t7, t8]
             t7 >> [t9, t10]
             t8 >> t11
-            [t9, t10, t11] >> t12
-            t12 >> t13
+            t9 >> t12
+            [t10, t11, t12] >> t13
+            t13 >> t14
+            t14 >> t15
 
         # ── PROFILE 4 : Mixed realistic ETL (lighter CPU) ─────────────────────
         elif profile % 13 == 4:
@@ -476,6 +570,7 @@ def _make_dag(dag_id: str, profile: int) -> DAG:
             t11 = BashOperator(task_id="bash_sort", bash_command=BASH_SORT_LARGE)
             t12 = PythonOperator(task_id="disk_post", python_callable=io_disk_stress, op_kwargs={"size_mb": 48})
             t13 = BashOperator(task_id="bash_find", bash_command=BASH_FIND_STRESS)
+            t14 = PythonOperator(task_id="chunk_copy", python_callable=io_chunked_file_copy, op_kwargs={"size_mb": 32})
 
             t1 >> [t2, t3, t4]
             t2 >> t5
@@ -486,8 +581,9 @@ def _make_dag(dag_id: str, profile: int) -> DAG:
             t9 >> [t10, t11]
             [t10, t11] >> t12
             t12 >> t13
+            t13 >> t14
 
-        # ── PROFILE 5 : Deep sequential chain (IO-biased) ────────────────────
+        # ── PROFILE 5 : Deep sequential chain (IO-biased) ──────��─────────────
         elif profile % 13 == 5:
             tasks = [
                 PythonOperator(task_id="step_01_disk", python_callable=io_disk_stress, op_kwargs={"size_mb": 64}),
@@ -503,6 +599,7 @@ def _make_dag(dag_id: str, profile: int) -> DAG:
                 PythonOperator(task_id="step_11_xcom_p", python_callable=xcom_producer),
                 PythonOperator(task_id="step_12_xcom_c", python_callable=xcom_consumer),
                 PythonOperator(task_id="step_13_sleep", python_callable=sleep_io_wait, op_kwargs={"seconds": 4}),
+                PythonOperator(task_id="step_14_chunk_copy", python_callable=io_chunked_file_copy, op_kwargs={"size_mb": 40}),
             ]
             for i in range(len(tasks) - 1):
                 tasks[i] >> tasks[i + 1]
@@ -529,6 +626,13 @@ def _make_dag(dag_id: str, profile: int) -> DAG:
                     task_id=f"parallel_prime_{i}",
                     python_callable=cpu_prime_sieve,
                     op_kwargs={"limit": 80_000 + i * 5_000},
+                )
+                for i in range(2)
+            ] + [
+                PythonOperator(
+                    task_id=f"parallel_tree_{i}",
+                    python_callable=io_temp_dir_tree,
+                    op_kwargs={"file_count": 800 + i * 200},
                 )
                 for i in range(2)
             ]
@@ -580,6 +684,7 @@ def _make_dag(dag_id: str, profile: int) -> DAG:
             mid1 = BashOperator(task_id="bash_disk", bash_command=BASH_DISK_IO)
             mid2 = PythonOperator(task_id="hash_loop", python_callable=cpu_sha_hash_loop, op_kwargs={"iterations": 15_000})
             mid3 = PythonOperator(task_id="file_pipeline", python_callable=io_temp_file_pipeline)
+            mid4 = PythonOperator(task_id="stat_stress", python_callable=io_metadata_stat_stress)
 
             for p, c in zip(producers, consumers):
                 p >> c
@@ -589,6 +694,7 @@ def _make_dag(dag_id: str, profile: int) -> DAG:
             mid2 >> mid3
             for c in consumers:
                 c >> mid1
+            mid3 >> mid4
 
         # ── PROFILE 9 : IO marathon ───────────────────────────────────────────
         elif profile % 13 == 9:
@@ -605,6 +711,7 @@ def _make_dag(dag_id: str, profile: int) -> DAG:
             t11 = PythonOperator(task_id="dns_resolve", python_callable=io_network_dns_resolve)
             t12 = PythonOperator(task_id="mixed_pipeline", python_callable=mixed_cpu_io_pipeline)
             t13 = PythonOperator(task_id="sleep_wait", python_callable=sleep_io_wait, op_kwargs={"seconds": 6})
+            t14 = PythonOperator(task_id="socket_connect", python_callable=io_socket_connect)
 
             [t1, t2] >> t3
             t3 >> t4
@@ -616,6 +723,7 @@ def _make_dag(dag_id: str, profile: int) -> DAG:
             [t9, t10] >> t11
             t11 >> t12
             t12 >> t13
+            t13 >> t14
 
         # ── PROFILE 10 : Network + disk I/O dominant ─────────────────────────
         elif profile % 13 == 10:
@@ -632,6 +740,7 @@ def _make_dag(dag_id: str, profile: int) -> DAG:
             t11 = BashOperator(task_id="bash_compress", bash_command=BASH_COMPRESS_STRESS)
             t12 = PythonOperator(task_id="mem_alloc", python_callable=memory_large_allocation, op_kwargs={"mb": 160})
             t13 = PythonOperator(task_id="dict_thrash", python_callable=memory_dict_thrash, op_kwargs={"entries": 300_000})
+            t14 = PythonOperator(task_id="stat_stress", python_callable=io_metadata_stat_stress)
 
             [t1, t2] >> t3
             t3 >> [t4, t5]
@@ -642,6 +751,7 @@ def _make_dag(dag_id: str, profile: int) -> DAG:
             t9 >> t11
             t10 >> t12
             [t11, t12] >> t13
+            t13 >> t14
 
         # ── PROFILE 11 : Short burst + IO parallelism ─────────────────────────
         elif profile % 13 == 11:
@@ -673,6 +783,10 @@ def _make_dag(dag_id: str, profile: int) -> DAG:
                 (io_temp_file_pipeline, {}),
                 (io_recursive_dir_walk, {}),
                 (io_network_dns_resolve, {}),
+                (io_socket_connect, {}),
+                (io_temp_dir_tree, {"file_count": random.randint(800, 2000)}),
+                (io_chunked_file_copy, {"size_mb": random.randint(24, 64)}),
+                (io_metadata_stat_stress, {}),
                 (mixed_cpu_io_pipeline, {}),
                 (sleep_io_wait, {"seconds": random.uniform(2, 8)}),
                 (memory_large_allocation, {"mb": random.randint(64, 192)}),
@@ -689,11 +803,12 @@ def _make_dag(dag_id: str, profile: int) -> DAG:
                 BASH_PROCESS_FORK,
                 BASH_NETWORK_CURL,
                 BASH_FIND_STRESS,
+                BASH_URANDOM_READ,
             ]
             random.shuffle(bash_cmds)
 
             tasks: list = []
-            for idx, (fn, kw) in enumerate(py_callables[:8]):
+            for idx, (fn, kw) in enumerate(py_callables[:9]):
                 tasks.append(PythonOperator(task_id=f"py_task_{idx:02d}", python_callable=fn, op_kwargs=kw))
             for idx, cmd in enumerate(bash_cmds[:5]):
                 tasks.append(BashOperator(task_id=f"bash_task_{idx:02d}", bash_command=cmd))
@@ -709,7 +824,7 @@ def _make_dag(dag_id: str, profile: int) -> DAG:
 
 # ──────────────────────────────────────────────────────────────────────────────
 #  DYNAMIC DAG REGISTRATION
-# ───────────────────────────────────────────────────���──────────────────────────
+# ──────────────────────────────────────────────────────────────────────────────
 
 for _idx in range(TOTAL_DAGS):
     _dag_id = f"stress_test_io_{_idx:03d}"
